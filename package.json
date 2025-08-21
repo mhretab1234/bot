@@ -1,0 +1,16 @@
+{
+  "name": "telegram-bot",
+  "version": "1.0.0",
+  "description": "My Telegram bot with Telegraf, Express, MongoDB, and sessions",
+  "main": "lang.js",
+  "scripts": {
+    "start": "node lang.js"
+  },
+  "dependencies": {
+    "telegraf": "^4.16.0",
+    "express": "^4.18.2",
+    "express-session": "^1.17.3",
+    "mongoose": "^7.0.0",
+    "dotenv": "^16.0.0"
+  }
+}
