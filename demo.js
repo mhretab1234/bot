@@ -1,3 +1,11 @@
+// school-bot.js
+const { Telegraf, Markup, session, Scenes } = require('telegraf');
+const mongoose = require('mongoose');
+const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
+const fetch = require('node-fetch');
+require('dotenv').config();
 
 
 
