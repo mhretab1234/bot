@@ -6169,58 +6169,216 @@ teacherSearchStudentScene.on('text', async (ctx) => {
 });
 // Register the scene
 stage.register(teacherSearchStudentScene);
-// Teacher Contact Parent Scene
+
+// Teacher Contact Parent Scene (Fixed for teacher not defined)
 const teacherContactParentScene = new Scenes.BaseScene('teacher_contact_parent_scene');
 
 teacherContactParentScene.enter(async (ctx) => {
     try {
         const teacher = await Teacher.findOne({ telegramId: ctx.from.id });
-        
         if (!teacher) {
             ctx.reply('❌ Teacher profile not found.', teacherMenu);
             return ctx.scene.leave();
         }
 
-        // Check if teacher has any students
-        const studentCount = await TeacherStudent.countDocuments({ teacherId: teacher.teacherId });
-        
-        if (studentCount === 0) {
-            ctx.reply('❌ You have no students in your database.', teacherMenu);
-            return ctx.scene.leave();
-        }
+        // Clear any prior session data
+        ctx.session.contactStudentId = null;
+        ctx.session.contactStudentName = null;
+        ctx.session.contactParentId = null;
+        ctx.session.contactParentName = null;
 
-        // Create contact option buttons
-        ctx.reply(
-            '📞 How would you like to contact a parent?',
-            Markup.inlineKeyboard([
-                [Markup.button.callback('🆔 Contact by Student ID', 'contact_by_id')],
-                [Markup.button.callback('📋 Contact from Student List', 'contact_by_list')],
-                [Markup.button.callback('❌ Cancel', 'cancel_contact_parent')]
-            ])
+        ctx.replyWithHTML(
+            '💬 *Contact a Parent*\n\n' +
+            'Enter the Student ID to contact their parent:\n\n' +
+            '📋 *Format:* ST1234 or ST-1234\n' +
+            '💡 *Tip:* Use the student ID from your class list.',
+            Markup.keyboard([['❌ Cancel']]).resize()
         );
 
     } catch (error) {
-        console.error('Error in teacher contact parent scene:', error);
+        console.error('Error entering contact parent scene:', error);
         ctx.reply('❌ An error occurred. Please try again.', teacherMenu);
         ctx.scene.leave();
     }
 });
-// Action handlers for teacher contact parent scene
-teacherContactParentScene.action('contact_by_id', async (ctx) => {
-    await ctx.answerCbQuery();
-    ctx.scene.enter('contact_parent_by_id_scene');
+
+teacherContactParentScene.on('text', async (ctx) => {
+    const input = ctx.message.text.trim().toUpperCase(); // Trim and normalize to uppercase for consistency
+
+    if (input === '❌ CANCEL') {
+        ctx.reply('❌ Contact cancelled.', teacherMenu);
+        ctx.session.contactStudentId = null;
+        ctx.session.contactStudentName = null;
+        ctx.session.contactParentId = null;
+        ctx.session.contactParentName = null;
+        return ctx.scene.leave();
+    }
+
+    // If session has contactStudentId, this is a message input
+    if (ctx.session.contactStudentId) {
+        const messageText = ctx.message.text.trim();
+
+        if (messageText.toUpperCase() === '❌ CANCEL') {
+            ctx.reply('❌ Message cancelled.', teacherMenu);
+            // Clear session
+            ctx.session.contactStudentId = null;
+            ctx.session.contactStudentName = null;
+            ctx.session.contactParentId = null;
+            ctx.session.contactParentName = null;
+            return ctx.scene.leave();
+        }
+
+        if (!messageText || messageText.length === 0) {
+            return ctx.reply('❌ Please enter a valid message (cannot be empty).');
+        }
+
+        if (messageText.length > 500) {
+            return ctx.reply('❌ Message too long. Keep it under 500 characters.');
+        }
+
+        try {
+            // Re-fetch teacher to avoid undefined error
+            const teacher = await Teacher.findOne({ telegramId: ctx.from.id });
+            if (!teacher) {
+                ctx.reply('❌ Teacher profile not found.', teacherMenu);
+                return ctx.scene.leave();
+            }
+
+            const { contactParentId, contactStudentName, contactStudentId } = ctx.session;
+
+            // Send message to parent
+            await ctx.telegram.sendMessage(
+                contactParentId,
+                `📩 *Message from Teacher*\n\n` +
+                `👨‍🏫 From: ${teacher.name} (${teacher.teacherId})\n` +
+                `👨‍🎓 About Student: ${contactStudentName} (ID: ${contactStudentId})\n` +
+                `💬 Message: ${messageText}\n\n` +
+                `📅 Sent: ${new Date().toLocaleString()}`,
+                { parse_mode: 'HTML' }
+            );
+
+            // Confirm to teacher
+            ctx.replyWithHTML(
+                `✅ *Message Sent Successfully!*\n\n` +
+                `👨‍👩‍👧 To Parent: ${ctx.session.contactParentName}\n` +
+                `👨‍🎓 Student: ${contactStudentName}\n` +
+                `💬 Your message has been delivered.`,
+                teacherMenu
+            );
+
+            // Log the contact
+            await trackAdminActivity(ctx, 'teacher_contact_parent_sent', {
+                teacherId: teacher.teacherId,
+                teacherName: teacher.name,
+                studentId: contactStudentId,
+                parentId: contactParentId,
+                messagePreview: messageText.substring(0, 100) + '...'
+            });
+
+            // Clear session
+            ctx.session.contactStudentId = null;
+            ctx.session.contactStudentName = null;
+            ctx.session.contactParentId = null;
+            ctx.session.contactParentName = null;
+
+            ctx.scene.leave();
+
+        } catch (error) {
+            console.error('Error sending message to parent:', error);
+            if (error.code === 403) {
+                ctx.reply('❌ Failed to send message. The parent may have blocked the bot or restricted messages.');
+            } else {
+                ctx.reply('❌ An error occurred while sending the message. Please try again.');
+            }
+            ctx.scene.leave();
+        }
+        return;
+    }
+
+    // Otherwise, this is a student ID input
+    // Step 1: Validate format
+    const normalizedId = input.replace(/-/g, '');
+    if (!/^ST\d{4}$/i.test(normalizedId)) {
+        return ctx.replyWithHTML(
+            '❌ *Invalid Student ID Format*\n\n' +
+            'Please enter a valid ID like: ST1234 or ST-1234\n\n' +
+            'Try again:'
+        );
+    }
+
+    // Step 2: Check if student exists and is linked to this teacher
+    const teacher = await Teacher.findOne({ telegramId: ctx.from.id });
+    if (!teacher) {
+        ctx.reply('❌ Teacher profile not found.', teacherMenu);
+        return ctx.scene.leave();
+    }
+
+    const student = await Student.findOne({ studentId: normalizedId });
+    if (!student) {
+        return ctx.replyWithHTML(
+            `❌ *Student ID Not Found*\n\n` +
+            `No student with ID "${normalizedId}" exists in the database.\n\n` +
+            'Please check the ID and try again:'
+        );
+    }
+
+    // Step 3: Verify teacher-student relationship
+    const relation = await TeacherStudent.findOne({
+        teacherId: teacher.teacherId,
+        studentId: normalizedId
+    });
+    if (!relation) {
+        return ctx.replyWithHTML(
+            `❌ *Access Denied*\n\n` +
+            `Student "${student.name}" (ID: ${normalizedId}) is not in your class list.\n\n` +
+            'You can only contact parents of your assigned students.'
+        );
+    }
+
+    // Step 4: Check if parent is linked
+    if (!student.parentId) {
+        return ctx.replyWithHTML(
+            `❌ *No Parent Linked*\n\n` +
+            `Student "${student.name}" (ID: ${normalizedId}) does not have a linked parent.\n\n` +
+            'Contact an admin to link a parent first.'
+        );
+    }
+
+    // Fetch parent details
+    const parent = await User.findOne({ telegramId: student.parentId });
+    if (!parent) {
+        return ctx.replyWithHTML(
+            `❌ *Parent Not Found*\n\n` +
+            `A parent is linked to "${student.name}" but their profile is invalid.\n\n` +
+            'Contact an admin to fix this.'
+        );
+    }
+
+    // Store in session for next step
+    ctx.session.contactStudentId = normalizedId;
+    ctx.session.contactStudentName = student.name;
+    ctx.session.contactParentId = parent.telegramId;
+    ctx.session.contactParentName = parent.name;
+
+    ctx.replyWithHTML(
+        `✅ *Student Found*\n\n` +
+        `👨‍🎓 Student: ${student.name} (ID: ${normalizedId})\n` +
+        `👨‍👩‍👧 Parent: ${parent.name}\n\n` +
+        'Now, type your message to send to the parent:',
+        Markup.keyboard([['❌ Cancel']]).resize()
+    );
+
+    // Track activity
+    await trackAdminActivity(ctx, 'teacher_contact_parent_init', {
+        teacherId: teacher.teacherId,
+        studentId: normalizedId,
+        parentId: parent.telegramId
+    });
 });
 
-teacherContactParentScene.action('contact_by_list', async (ctx) => {
-    await ctx.answerCbQuery();
-    ctx.scene.enter('contact_parent_by_list_scene');
-});
 
-teacherContactParentScene.action('cancel_contact_parent', async (ctx) => {
-    await ctx.answerCbQuery();
-    ctx.reply('❌ Contact parent cancelled.', teacherMenu);
-    ctx.scene.leave();
-});
+
+
 // Contact by ID Scene
 const contactParentByIdScene = new Scenes.BaseScene('contact_parent_by_id_scene');
 
