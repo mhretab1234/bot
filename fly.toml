@@ -1,0 +1,8 @@
+app = "school-bot"
+primary_region = "ord"  # Chicago; choose closest (e.g., "lhr" for London)
+
+[build]
+builder = "paketobuildpacks/builder:base"
+
+[env]
+NODE_ENV = "production"
